@@ -67,10 +67,10 @@ class Alert extends StatelessWidget {
 class AlertMessenger extends StatefulWidget {
   const AlertMessenger({
     super.key,
-    required this.child,
+    required this.builder,
   });
 
-  final Widget child;
+  final Widget Function(BuildContext context, String text) builder;
 
   @override
   State<AlertMessenger> createState() => AlertMessengerState();
@@ -92,18 +92,26 @@ class AlertMessenger extends StatefulWidget {
 }
 
 class AlertMessengerState extends State<AlertMessenger> with TickerProviderStateMixin {
-  late final AnimationController controller;
-  late final Animation<double> animation;
+  late final List<AnimationController> _controllers;
+  late final List<Animation<double>> _animations;
+  final _duration = const Duration(milliseconds: 300);
+  bool _hasAlert = false;
 
-  Widget? alertWidget;
+  List<Widget> alerts = List.generate(
+    AlertPriority.values.length,
+    (index) => const SizedBox.shrink(),
+  );
 
   @override
   void initState() {
     super.initState();
 
-    controller = AnimationController(
-      duration: const Duration(milliseconds: 300),
-      vsync: this,
+    _controllers = List.generate(
+      AlertPriority.values.length,
+      (_) => AnimationController(
+        duration: _duration,
+        vsync: this,
+      ),
     );
   }
 
@@ -111,53 +119,94 @@ class AlertMessengerState extends State<AlertMessenger> with TickerProviderState
   void didChangeDependencies() {
     super.didChangeDependencies();
     final alertHeight = MediaQuery.of(context).padding.top + kAlertHeight;
-    animation = Tween<double>(begin: -alertHeight, end: 0.0).animate(
-      CurvedAnimation(parent: controller, curve: Curves.easeInOut),
+    _animations = List.generate(
+      AlertPriority.values.length,
+      (index) => Tween<double>(begin: -alertHeight, end: 0.0).animate(
+        CurvedAnimation(parent: _controllers[index], curve: Curves.easeInOut),
+      ),
     );
   }
 
   @override
   void dispose() {
-    controller.dispose();
+    for (var controller in _controllers) {
+      controller.dispose();
+    }
     super.dispose();
   }
 
   void showAlert({required Alert alert}) {
-    setState(() => alertWidget = alert);
-    controller.forward();
+    setState(() {
+      alerts[alert.priority.value] = alert;
+      _hasAlert = true;
+    });
+    _controllers[alert.priority.value].forward();
   }
 
   void hideAlert() {
-    controller.reverse();
+    for (int i = _controllers.length - 1; i >= 0; i--) {
+      if (_controllers[i].status == AnimationStatus.completed) {
+        setState(() {
+          _hasAlert = _controllers.where((element) => element.status == AnimationStatus.dismissed).length <= 1;
+        });
+        _controllers[i].reverse().whenComplete(() {
+          setState(() {
+            alerts[i] = const SizedBox.shrink();
+          });
+        });
+        break;
+      }
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     final statusbarHeight = MediaQuery.of(context).padding.top;
 
-    return AnimatedBuilder(
-      animation: animation,
-      builder: (context, child) {
-        final position = animation.value + kAlertHeight;
-        return Stack(
-          clipBehavior: Clip.antiAliasWithSaveLayer,
-          children: [
-            Positioned.fill(
-              top: position <= statusbarHeight ? 0 : position - statusbarHeight,
-              child: _AlertMessengerScope(
-                state: this,
-                child: widget.child,
-              ),
+    final alertHeight = _hasAlert ? 0.0 : statusbarHeight + kAlertHeight;
+
+    final position = -alertHeight + kAlertHeight;
+
+    String text = '';
+
+    for (int i = alerts.length - 1; i >= 0; i--) {
+      final alert = alerts[i];
+      if (alert is Alert) {
+        text = alert.child is Text ? (alert.child as Text).data ?? '' : '';
+        break;
+      }
+    }
+
+    return Stack(
+      clipBehavior: Clip.antiAliasWithSaveLayer,
+      children: [
+        AnimatedPositioned(
+          duration: _duration,
+          curve: Curves.easeInOut,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          top: position <= statusbarHeight ? 0 : position - statusbarHeight,
+          child: _AlertMessengerScope(
+            state: this,
+            child: Builder(
+              builder: (context) => widget.builder.call(context, text),
             ),
-            Positioned(
-              top: animation.value,
-              left: 0,
-              right: 0,
-              child: alertWidget ?? const SizedBox.shrink(),
-            ),
-          ],
-        );
-      },
+          ),
+        ),
+        for (int i = 0; i < _controllers.length; i++)
+          AnimatedBuilder(
+            animation: _animations[i],
+            builder: (context, child) {
+              return Positioned(
+                top: _animations[i].value,
+                left: 0,
+                right: 0,
+                child: alerts[i],
+              );
+            },
+          ),
+      ],
     );
   }
 }
